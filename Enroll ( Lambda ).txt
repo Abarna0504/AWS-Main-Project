@@ -1,0 +1,137 @@
+import json
+import os
+import boto3
+from datetime import datetime
+
+# --- Configuration ---
+# IMPORTANT: These are set via Environment Variables in the AWS Lambda console.
+# If they are not set, these default values will be used.
+TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'LearningPlatformEnrollments')
+SOURCE_EMAIL = os.environ.get('SOURCE_EMAIL', 'bala.aparna5@gmail.com')
+
+# Initialize AWS clients
+# We assume the Lambda Execution Role has permissions for DynamoDB and SES.
+dynamodb = boto3.resource('dynamodb')
+# Note: SES region should match where you verified the email (defaulting to region where Lambda runs)
+SES_REGION = 'ap-south-1' 
+ses_client = boto3.client('ses', region_name=SES_REGION)
+
+# --- SES Helper Function ---
+
+def send_confirmation_email(recipient_email, user_name):
+    """Sends a confirmation email using SES."""
+    if not SOURCE_EMAIL:
+        print("SES not configured: SOURCE_EMAIL environment variable is missing.")
+        return
+
+    subject = "Enrollment Confirmation for Your Online Learning Platform"
+    body_html = f"""
+    <html>
+    <head></head>
+    <body>
+      <h1>Welcome, {user_name}!</h1>
+      <p>Thank you for enrolling in our platform. We have received your details.</p>
+      <p>Please proceed to the course selection page to choose your first course.</p>
+      <p>If you did not initiate this enrollment, please ignore this email.</p>
+    </body>
+    </html>
+    """
+
+    try:
+        response = ses_client.send_email(
+            Source=SOURCE_EMAIL,
+            Destination={
+                'ToAddresses': [
+                    recipient_email,
+                ],
+            },
+            Message={
+                'Subject': {
+                    'Data': subject,
+                    'Charset': 'UTF-8'
+                },
+                'Body': {
+                    'Html': {
+                        'Data': body_html,
+                        'Charset': 'UTF-8'
+                    }
+                }
+            }
+        )
+        print(f"SES email sent successfully. Message ID: {response['MessageId']}")
+        return True
+    except Exception as e:
+        print(f"Error sending SES email to {recipient_email}: {e}")
+        # Log the error but continue to ensure database transaction is successful.
+        return False
+
+# --- Main Lambda Handler ---
+
+def lambda_handler(event, context):
+    """Handles the user enrollment request (API Gateway -> DynamoDB -> SES)."""
+    
+    if not TABLE_NAME:
+        # Fallback check for the table name, although we provide a default above.
+        print("FATAL ERROR: DYNAMODB_TABLE_NAME is not set.")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'message': 'Server configuration error.'})
+        }
+
+    try:
+        # 1. Parse the incoming request body
+        body = json.loads(event.get('body', '{}'))
+    except json.JSONDecodeError:
+        return {
+            'statusCode': 400,
+            'body': json.dumps({'message': 'Invalid JSON format in request body'})
+        }
+
+    # 2. Required fields validation
+    required_fields = ['name', 'email', 'phone', 'qualification', 'location']
+    if not all(field in body and body[field] for field in required_fields):
+        return {
+            'statusCode': 400,
+            'body': json.dumps({'message': 'Missing one or more required fields.'})
+        }
+
+    # 3. Prepare data for DynamoDB
+    # CRITICAL FIX: The key 'email' (lowercase) is used here to match the 
+    # ValidationException you encountered, ensuring it is recognized as the Partition Key.
+    enrollment_data = {
+        'Email': body['email'],  # Partition Key (must match the table's key name exactly)
+        'Name': body['name'],
+        'Phone': body['phone'],
+        'Qualification': body['qualification'],
+        'Location': body['location'],
+        'EnrollmentDate': datetime.utcnow().isoformat(),
+        'CourseID': 'NONE',
+        'Progress': {} # Use an empty map to initialize the progress tracking attribute
+    }
+
+    try:
+        table = dynamodb.Table(TABLE_NAME)
+        
+        # 4. Save the item to DynamoDB
+        table.put_item(Item=enrollment_data)
+        
+        # 5. Send confirmation email (asynchronous)
+        send_confirmation_email(body['email'], body['name'])
+        
+        # 6. Successful response
+        return {
+            'statusCode': 200,
+            'headers': {
+                'Content-Type': 'application/json',
+                # Required for CORS when the frontend is hosted on S3
+                'Access-Control-Allow-Origin': '*' 
+            },
+            'body': json.dumps({'message': 'Enrollment successful. Check your email for confirmation.', 'userID': body['email']})
+        }
+
+    except Exception as e:
+        print(f"Internal Server Error: {e}")
+        return {
+            'statusCode': 500,
+            'body': json.dumps({'message': f'An unexpected error occurred during database operation: {str(e)}'})
+        }

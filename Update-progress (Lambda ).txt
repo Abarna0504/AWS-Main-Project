@@ -1,0 +1,83 @@
+import json
+import os
+import boto3
+from decimal import Decimal  # 👈 IMPORTANT FIX
+
+TABLE_NAME = os.environ.get('DYNAMODB_TABLE_NAME', 'LearningPlatformEnrollments')
+SOURCE_EMAIL = os.environ.get('SOURCE_EMAIL', 'bala.aparna5@gmail.com')
+
+dynamodb = boto3.resource('dynamodb')
+ses_client = boto3.client('ses', region_name='ap-south-1')
+
+# --- Helper: Send email ---
+def send_completion_email(email, course_id):
+    subject = f"🎉 Course Completed: {course_id}"
+    body_html = f"""
+    <html>
+    <body>
+        <h2>Congratulations!</h2>
+        <p>You have successfully completed your course: <b>{course_id}</b>.</p>
+        <p>We’re proud of you — keep learning and growing!</p>
+        <br/>
+        <p>With love,<br/>Online Learning Platform Team 💙</p>
+    </body>
+    </html>
+    """
+    try:
+        ses_client.send_email(
+            Source=SOURCE_EMAIL,
+            Destination={'ToAddresses': [email]},
+            Message={
+                'Subject': {'Data': subject, 'Charset': 'UTF-8'},
+                'Body': {'Html': {'Data': body_html, 'Charset': 'UTF-8'}}
+            }
+        )
+        print(f"✅ Completion mail sent to {email}")
+    except Exception as e:
+        print(f"❌ Error sending email: {e}")
+
+# --- Lambda Handler ---
+def lambda_handler(event, context):
+    print("Received event:", event)
+
+    try:
+        body = json.loads(event.get('body', '{}'))
+        email = body.get('email')
+        course_id = body.get('course_id')
+        progress = float(body.get('progress', 0))
+
+        if not email or not course_id:
+            return {'statusCode': 400, 'body': json.dumps({'message': 'Missing required fields'})}
+
+        table = dynamodb.Table(TABLE_NAME)
+
+        # ✅ Convert to Decimal before saving
+        progress_decimal = Decimal(str(progress))
+
+        response = table.update_item(
+            Key={'Email': email},
+            UpdateExpression="SET Progress.#c = :p, CourseID = :cid",
+            ExpressionAttributeNames={'#c': course_id},
+            ExpressionAttributeValues={
+                ':p': progress_decimal,  # 👈 Decimal instead of float
+                ':cid': course_id
+            },
+            ReturnValues="UPDATED_NEW"
+        )
+
+        print("DynamoDB update response:", response)
+
+        # If completed (1.0), send mail
+        if progress >= 1.0:
+            print(f"User {email} completed {course_id}, sending mail...")
+            send_completion_email(email, course_id)
+
+        return {
+            'statusCode': 200,
+            'headers': {'Access-Control-Allow-Origin': '*'},
+            'body': json.dumps({'message': 'Progress updated successfully'})
+        }
+
+    except Exception as e:
+        print("Error:", e)
+        return {'statusCode': 500, 'body': json.dumps({'message': str(e)})}
