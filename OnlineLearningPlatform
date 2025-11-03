@@ -1,0 +1,24 @@
+# 🌐 Serverless Contact Form Using AWS
+
+A simple **serverless contact form** built using AWS services.  
+Users can submit their name, email, and message — automatically sent to the admin via **Amazon SES**, without any traditional servers.
+
+---
+
+## ☁️ AWS Services Used
+- **S3** – Hosts static website (HTML form)  
+- **API Gateway** – Handles HTTPS POST request  
+- **Lambda** – Processes form data  
+- **SES** – Sends email notifications  
+- **CloudWatch** – Logs and monitoring  
+- **IAM** – Secure permissions for Lambda  
+
+---
+
+## ⚙️ Architecture Flow
+1. User submits form → hosted on **S3**  
+2. **API Gateway** triggers **Lambda**  
+3. **Lambda** uses **SES** to send email  
+4. **CloudWatch** monitors all logs  
+
+
